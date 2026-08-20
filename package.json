@@ -1,14 +1,23 @@
 {
   "name": "pi-deny",
   "version": "1.0.0",
-  "description": "Toggleable permission policy manager for pi: Ctrl+Alt+P opens a policy picker (deny git push / deny edit / custom regex / allow all), injects the active policy into the system prompt so the model is aware, and blocks matching tool calls at the event level.",
-  "keywords": ["pi-package", "permission", "deny", "policy", "readonly", "guard"],
+  "description": "Toggleable permission policy manager for pi: Ctrl+Alt+P opens a policy picker (deny git push / deny edit / custom natural-language constraint / allow all), injects the active policy into the system prompt so the model is aware, and blocks matching tool calls at the event level.",
+  "keywords": [
+    "pi-package",
+    "permission",
+    "deny",
+    "policy",
+    "readonly",
+    "guard"
+  ],
   "license": "MIT",
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   }
 }
