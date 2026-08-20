@@ -1,50 +1,64 @@
 /**
  * pi-deny
  *
- * 可切换的权限策略管理器。
+ * 权限策略管理器
  * - 快捷键 Ctrl+Alt+P 弹出策略选择框
- * - 策略选项：
- *   - 🚫 禁止 git push（含 git push --force 等所有 push 变体）
- *   - 🚫 禁止 edit（edit / write / edit-diff / patch）
- *   - ✏️ 自定义指令（手动输入要禁止的命令正则）
- *   - ✅ 不禁止任何指令（默认）
- * - 状态栏显示当前策略（🔒RO / 🚫NO-PUSH / ⚙️自定义 / 默认不显示）
- * - 通过 before_agent_start 注入系统提示，让模型感知当前权限策略
+ * - 策略：禁止 git push / 禁止 edit（只读）/ 严格（两者）+ 自定义指令（自然语言）
+ * - 自定义指令直接注入模型上下文，由模型语义理解并遵守（不做命令级匹配）
+ * - 其他策略用事件级拦截兜底（防模型漏判）
+ * - "不禁止任何指令"时不显示状态栏；其余显示徽标；自定义显示 ⚙️
  */
 export default function (pi: ExtensionAPI) {
-  // 策略状态
-  let denyGitPush = false;
-  let denyEdit = false;
-  let customPattern: RegExp | null = null;
-  let customLabel = "";
+  type Policy = {
+    id: string;
+    label: string;
+    badge: string | undefined;   // undefined = 状态栏不显示
+    denyEdit: boolean;
+    denyGitPush: boolean;
+    custom?: string;             // 自定义指令（自然语言，注入上下文）
+  };
 
   const STATUS_KEY = "pi-deny";
 
-  // ── 构建当前策略描述（用于系统提示注入） ──────────────────────
-  function buildPolicyText(): string {
-    const parts: string[] = [];
-    if (denyEdit) parts.push("- 禁止 edit / write / edit-diff / patch（所有文件修改工具）");
-    if (denyGitPush) parts.push("- 禁止 git push（含 --force 变体）");
-    if (customPattern) parts.push(`- 禁止匹配 ${customLabel} 的命令`);
-    if (parts.length === 0) return "无（允许所有操作）";
-    return parts.join("\n");
+  // 当前策略（默认：不禁止任何指令）
+  let current: Policy = {
+    id: "none",
+    label: "全部放行",
+    badge: undefined,
+    denyEdit: false,
+    denyGitPush: false,
+  };
+
+  // ── 预设策略 ──────────────────────────────────────────────────
+  const selectOptions = [
+    "🚫 禁止 git push",
+    "🔒 禁止 edit / write（只读）",
+    "⛔ 严格：禁止 git push + edit",
+    "✏️ 自定义指令（自然语言）",
+    "✅ 不禁止任何指令",
+  ];
+
+  // ── 策略描述（注入系统提示） ──────────────────────────────────
+  function policyText(p: Policy): string {
+    const prohibitions: string[] = [];
+    if (p.denyEdit) prohibitions.push("禁止 edit / write / edit-diff / patch（所有文件修改）");
+    if (p.denyGitPush) prohibitions.push("禁止 git push（含 --force）");
+    const base = prohibitions.length ? prohibitions.join("；") : "（无内置禁止项）";
+    if (p.custom) return `${base}。自定义约束（必须严格遵守）：${p.custom}`;
+    return base;
   }
 
-  // ── 更新状态栏 ────────────────────────────────────────────────
+  // ── 状态栏 ────────────────────────────────────────────────────
   function updateStatus(ctx: { ui: { setStatus: (k: string, v: string | undefined) => void } }) {
-    if (denyEdit) ctx.ui.setStatus(STATUS_KEY, "🔒RO");
-    else if (denyGitPush) ctx.ui.setStatus(STATUS_KEY, "🚫NO-PUSH");
-    else if (customPattern) ctx.ui.setStatus(STATUS_KEY, `⚙️${customLabel.slice(0, 8)}`);
-    else ctx.ui.setStatus(STATUS_KEY, undefined);
+    ctx.ui.setStatus(STATUS_KEY, current.badge ?? undefined);
   }
 
-  // ── 系统提示注入：模型感知当前策略 ─────────────────────────────
+  // ── 系统提示注入：每次 agent 启动注入当前策略 ──────────────────
   pi.on("before_agent_start", (event) => {
-    const policy = buildPolicyText();
     const notice = `\n\n<active_policy>
 当前生效的权限策略：
-${policy}
-如果用户要求执行被禁止的操作，必须拒绝并提示用户。要修改策略，请用户按 Ctrl+Alt+P。
+${policyText(current)}
+你必须在每次行动前判断是否违反此策略。如果用户要求执行被禁止的操作，一律拒绝并提示。要修改策略，请用户按 Ctrl+Alt+P。
 </active_policy>`;
     return { systemPrompt: event.systemPrompt + notice };
   });
@@ -53,87 +67,47 @@ ${policy}
   pi.registerShortcut("ctrl+alt+p", {
     description: "Select permission policy (pi-deny)",
     async handler(ctx) {
-      const choice = await ctx.ui.select("权限策略", [
-        "🚫 禁止 git push",
-        "🚫 禁止 edit",
-        "✏️ 自定义指令",
-        "✅ 不禁止任何指令",
-      ]);
-      if (choice === undefined) return; // 用户取消
+      const choice = await ctx.ui.select("权限策略", selectOptions);
+      if (choice === undefined) return;
 
       switch (choice) {
         case "🚫 禁止 git push":
-          denyGitPush = true;
-          denyEdit = false;
-          customPattern = null;
-          customLabel = "";
-          ctx.ui.notify("🚫 已禁止 git push", "info");
+          current = { id: "push", label: choice, badge: "🚫NO-PUSH", denyEdit: false, denyGitPush: true };
           break;
-        case "🚫 禁止 edit":
-          denyEdit = true;
-          denyGitPush = false;
-          customPattern = null;
-          customLabel = "";
-          ctx.ui.notify("🔒 已禁止 edit / write", "info");
+        case "🔒 禁止 edit / write（只读）":
+          current = { id: "edit", label: choice, badge: "🔒RO", denyEdit: true, denyGitPush: false };
           break;
-        case "✏️ 自定义指令": {
-          const pattern = await ctx.ui.input("自定义禁止规则", "输入正则，如 ^git push 或 ^rm ");
-          if (pattern) {
-            try {
-              customPattern = new RegExp(pattern);
-              customLabel = pattern;
-              denyEdit = false;
-              denyGitPush = false;
-              ctx.ui.notify(`⚙️ 自定义规则已生效: ${pattern}`, "info");
-            } catch {
-              customPattern = null;
-              customLabel = "";
-              ctx.ui.notify("正则无效，未设置", "error");
-            }
+        case "⛔ 严格：禁止 git push + edit":
+          current = { id: "strict", label: choice, badge: "⛔STRICT", denyEdit: true, denyGitPush: true };
+          break;
+        case "✏️ 自定义指令（自然语言）": {
+          const custom = await ctx.ui.input("自定义约束（自然语言）", "例如：不要修改 docs/ 下的文件；或禁止 sudo 操作");
+          if (custom) {
+            current = { id: "custom", label: `自定义: ${custom}`, badge: "⚙️", denyEdit: false, denyGitPush: false, custom };
+            ctx.ui.notify(`⚙️ 自定义约束已注入上下文：${custom}`, "info");
+            updateStatus(ctx);
+            return;
           }
-          break;
+          return;
         }
         case "✅ 不禁止任何指令":
-          denyEdit = false;
-          denyGitPush = false;
-          customPattern = null;
-          customLabel = "";
-          ctx.ui.notify("✅ 已解除所有禁止，允许全部操作", "info");
+          current = { id: "none", label: choice, badge: undefined, denyEdit: false, denyGitPush: false };
           break;
       }
       updateStatus(ctx);
+      ctx.ui.notify(`策略已切换：${current.label}`, "info");
     },
   });
 
-  // ── 工具调用拦截 ─────────────────────────────────────────────
+  // ── 工具拦截（兜底：防模型漏判） ──────────────────────────────
   pi.on("tool_call", (event) => {
-    const toolName = event.toolName;
-
-    // 禁止 edit：拦截文件修改工具
-    if (denyEdit && (toolName === "edit" || toolName === "write" || toolName === "edit-diff" || toolName === "patch")) {
-      return {
-        block: true,
-        reason: `[pi-deny] 当前策略禁止 ${toolName}。按 Ctrl+Alt+P 更换策略。`,
-      };
+    const t = event.toolName;
+    if (current.denyEdit && (t === "edit" || t === "write" || t === "edit-diff" || t === "patch")) {
+      return { block: true, reason: `[pi-deny] ${current.label}：禁止 ${t}。按 Ctrl+Alt+P 修改。` };
     }
-
-    // 禁止 git push / 自定义规则：bash 拦截
-    if (toolName === "bash") {
-      const cmd = String(event.input?.command ?? "");
-      if (denyGitPush && /\bgit\s+push\b/.test(cmd)) {
-        return {
-          block: true,
-          reason: `[pi-deny] 当前策略禁止 git push。按 Ctrl+Alt+P 更换策略。`,
-        };
-      }
-      if (customPattern && customPattern.test(cmd)) {
-        return {
-          block: true,
-          reason: `[pi-deny] 命令命中自定义规则「${customLabel}」。按 Ctrl+Alt+P 更换策略。`,
-        };
-      }
+    if (t === "bash" && current.denyGitPush && /\bgit\s+push\b/.test(String(event.input?.command ?? ""))) {
+      return { block: true, reason: `[pi-deny] ${current.label}：禁止 git push。按 Ctrl+Alt+P 修改。` };
     }
-
     return undefined;
   });
 }
