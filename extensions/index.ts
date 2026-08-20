@@ -48,6 +48,12 @@ export default function (pi: ExtensionAPI) {
     return base;
   }
 
+  // ── 状态栏截断工具 ───────────────────────────────────────────
+  // 状态栏空间有限，超过指定长度用…截断
+  function truncate(s: string, max: number): string {
+    return s.length <= max ? s : s.slice(0, max - 1) + "…";
+  }
+
   // ── 状态栏 ────────────────────────────────────────────────────
   function updateStatus(ctx: { ui: { setStatus: (k: string, v: string | undefined) => void } }) {
     ctx.ui.setStatus(STATUS_KEY, current.badge ?? undefined);
@@ -83,8 +89,8 @@ ${policyText(current)}
         case "✏️ 自定义指令（自然语言）": {
           const custom = await ctx.ui.input("自定义约束（自然语言）", "例如：不要修改 docs/ 下的文件；或禁止 sudo 操作");
           if (custom) {
-            current = { id: "custom", label: `自定义: ${custom}`, badge: "⚙️", denyEdit: false, denyGitPush: false, custom };
-            ctx.ui.notify(`⚙️ 自定义约束已注入上下文：${custom}`, "info");
+            current = { id: "custom", label: `自定义: ${custom}`, badge: truncate(custom, 30), denyEdit: false, denyGitPush: false, custom };
+            ctx.ui.notify(`✏️ 自定义约束已注入上下文：${custom}`, "info");
             updateStatus(ctx);
             return;
           }
